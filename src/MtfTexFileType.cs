@@ -8,7 +8,7 @@ namespace MtfTexPaintDotNet
     {
         public MtfTexFileType()
             : base(
-                "MT Framework TEX (RE5 PC)",
+                "MT Framework TEX (RE5 save / RE6 read)",
                 new FileTypeOptions
                 {
                     LoadExtensions = new[] { ".tex" },
@@ -52,7 +52,7 @@ namespace MtfTexPaintDotNet
 
             BitmapLayer layer = new BitmapLayer(surface, true)
             {
-                Name = "RE5 TEX"
+                Name = decoded.SourceLabel
             };
 
             Document document = new Document(decoded.Width, decoded.Height);
