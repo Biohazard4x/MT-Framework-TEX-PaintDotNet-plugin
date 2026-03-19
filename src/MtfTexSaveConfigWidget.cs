@@ -7,6 +7,20 @@ namespace MtfTexPaintDotNet
 {
     public sealed class MtfTexSaveConfigWidget : SaveConfigWidget
     {
+        private sealed class CompressionOption
+        {
+            public string Text { get; }
+            public Re5CompressionMode Mode { get; }
+
+            public CompressionOption(string text, Re5CompressionMode mode)
+            {
+                Text = text;
+                Mode = mode;
+            }
+
+            public override string ToString() => Text;
+        }
+
         private readonly Panel scrollPanel;
         private readonly TableLayoutPanel stack;
 
@@ -65,7 +79,13 @@ namespace MtfTexPaintDotNet
                 Margin = new Padding(0, 4, 0, 0),
             };
 
-            compressionCombo = MakeCombo(new[] { "Auto", "DXT1", "DXT3", "DXT5" });
+            compressionCombo = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                IntegralHeight = false,
+                Height = 24,
+                Margin = Padding.Empty,
+            };
             compressionCombo.SelectedIndexChanged += OnAnySettingChanged;
 
             generateMipmapsCheck = new CheckBox
@@ -132,17 +152,18 @@ namespace MtfTexPaintDotNet
         protected override void InitWidgetFromToken(SaveConfigToken sourceToken)
         {
             MtfTexSaveConfigToken current = sourceToken as MtfTexSaveConfigToken ?? new MtfTexSaveConfigToken();
+            MtfGameProfile profile = current.Profile;
             Re5ResolvedSaveSettings resolved = Re5SaveDefaults.Resolve(current);
 
             initializing = true;
             try
             {
-                profileCombo.SelectedIndex = ClampIndex((int)current.Profile, profileCombo.Items.Count);
-                compressionCombo.SelectedIndex = ClampIndex((int)resolved.Compression, compressionCombo.Items.Count);
+                profileCombo.SelectedIndex = ClampIndex((int)profile, profileCombo.Items.Count);
+                ConfigureCompressionOptions(profile, resolved.Compression);
                 generateMipmapsCheck.Checked = resolved.GenerateMipmaps;
                 alphaCombo.SelectedIndex = resolved.ForceOpaque ? (int)Re5AlphaMode.ForceOpaque : (int)Re5AlphaMode.Preserve;
 
-                profileDescriptionLabel.Text = GetProfileDescription((MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count));
+                profileDescriptionLabel.Text = GetProfileDescription(profile);
                 RefreshSummary(ReadTokenFromWidget());
             }
             finally
@@ -163,8 +184,9 @@ namespace MtfTexPaintDotNet
             initializing = true;
             try
             {
-                ApplyProfileDefaultsToControls((MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count));
-                profileDescriptionLabel.Text = GetProfileDescription((MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count));
+                MtfGameProfile profile = GetSelectedProfile();
+                ApplyProfileDefaultsToControls(profile);
+                profileDescriptionLabel.Text = GetProfileDescription(profile);
             }
             finally
             {
@@ -181,20 +203,6 @@ namespace MtfTexPaintDotNet
             if (initializing)
             {
                 return;
-            }
-
-            if ((MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count) == MtfGameProfile.RE6 &&
-                (Re5CompressionMode)ClampIndex(compressionCombo.SelectedIndex, compressionCombo.Items.Count) == Re5CompressionMode.Dxt3)
-            {
-                initializing = true;
-                try
-                {
-                    compressionCombo.SelectedIndex = (int)Re5CompressionMode.Dxt5;
-                }
-                finally
-                {
-                    initializing = false;
-                }
             }
 
             UpdateToken();
@@ -215,27 +223,117 @@ namespace MtfTexPaintDotNet
                 _ => Re5CompressionMode.Auto,
             };
 
-            compressionCombo.SelectedIndex = (int)compression;
+            ConfigureCompressionOptions(profile, compression);
             generateMipmapsCheck.Checked = true;
             alphaCombo.SelectedIndex = (int)Re5AlphaMode.Preserve;
+        }
+
+        private void ConfigureCompressionOptions(MtfGameProfile profile, Re5CompressionMode preferredMode)
+        {
+            compressionCombo.BeginUpdate();
+            try
+            {
+                compressionCombo.Items.Clear();
+
+                if (profile == MtfGameProfile.RE6)
+                {
+                    AddCompressionOption("Auto", Re5CompressionMode.Auto);
+                    AddCompressionOption("BC1 (Linear, DXT1)", Re5CompressionMode.Dxt1);
+                    AddCompressionOption("BC3 (Linear, DXT5)", Re5CompressionMode.Dxt5);
+                    AddCompressionOption("BC5 (Linear, Unsigned)", Re5CompressionMode.Bc5);
+                    AddCompressionOption("RGBA8 (Linear)", Re5CompressionMode.Rgba8);
+                }
+                else
+                {
+                    AddCompressionOption("Auto", Re5CompressionMode.Auto);
+                    AddCompressionOption("BC1 (Linear, DXT1)", Re5CompressionMode.Dxt1);
+                    AddCompressionOption("BC2 (Linear, DXT3)", Re5CompressionMode.Dxt3);
+                    AddCompressionOption("BC3 (Linear, DXT5)", Re5CompressionMode.Dxt5);
+                }
+
+                SelectCompressionOption(GetSupportedCompressionOrDefault(profile, preferredMode));
+            }
+            finally
+            {
+                compressionCombo.EndUpdate();
+            }
+        }
+
+        private void AddCompressionOption(string text, Re5CompressionMode mode)
+        {
+            compressionCombo.Items.Add(new CompressionOption(text, mode));
+        }
+
+        private void SelectCompressionOption(Re5CompressionMode mode)
+        {
+            for (int i = 0; i < compressionCombo.Items.Count; i++)
+            {
+                if (compressionCombo.Items[i] is CompressionOption item && item.Mode == mode)
+                {
+                    compressionCombo.SelectedIndex = i;
+                    return;
+                }
+            }
+
+            compressionCombo.SelectedIndex = compressionCombo.Items.Count > 0 ? 0 : -1;
+        }
+
+        private static Re5CompressionMode GetSupportedCompressionOrDefault(MtfGameProfile profile, Re5CompressionMode mode)
+        {
+            if (profile == MtfGameProfile.RE6)
+            {
+                return mode switch
+                {
+                    Re5CompressionMode.Auto => Re5CompressionMode.Auto,
+                    Re5CompressionMode.Dxt1 => Re5CompressionMode.Dxt1,
+                    Re5CompressionMode.Dxt5 => Re5CompressionMode.Dxt5,
+                    Re5CompressionMode.Bc5 => Re5CompressionMode.Bc5,
+                    Re5CompressionMode.Rgba8 => Re5CompressionMode.Rgba8,
+                    _ => Re5CompressionMode.Dxt5,
+                };
+            }
+
+            return mode switch
+            {
+                Re5CompressionMode.Auto => Re5CompressionMode.Auto,
+                Re5CompressionMode.Dxt1 => Re5CompressionMode.Dxt1,
+                Re5CompressionMode.Dxt3 => Re5CompressionMode.Dxt3,
+                Re5CompressionMode.Dxt5 => Re5CompressionMode.Dxt5,
+                _ => Re5CompressionMode.Auto,
+            };
         }
 
         private MtfTexSaveConfigToken ReadTokenFromWidget()
         {
             return new MtfTexSaveConfigToken
             {
-                Profile = (MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count),
-                Compression = (Re5CompressionMode)ClampIndex(compressionCombo.SelectedIndex, compressionCombo.Items.Count),
+                Profile = GetSelectedProfile(),
+                Compression = GetSelectedCompressionMode(),
                 GenerateMipmaps = generateMipmapsCheck.Checked,
                 AlphaMode = (Re5AlphaMode)ClampIndex(alphaCombo.SelectedIndex, alphaCombo.Items.Count),
             };
         }
 
+        private MtfGameProfile GetSelectedProfile()
+        {
+            return (MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count);
+        }
+
+        private Re5CompressionMode GetSelectedCompressionMode()
+        {
+            if (compressionCombo.SelectedItem is CompressionOption item)
+            {
+                return item.Mode;
+            }
+
+            return Re5CompressionMode.Auto;
+        }
+
         private void RefreshSummary(MtfTexSaveConfigToken current)
         {
             string targetLine = current.Profile == MtfGameProfile.RE6
-                ? "Target: RE6 2D profile (BC1/BC3 save backend)"
-                : "Target: RE5 2D profile";
+                ? "Target: RE6 2D profile (BC1/BC3/BC5/RGBA8 save backend)"
+                : "Target: RE5 2D profile (BC1/BC2/BC3 save backend)";
 
             summaryLabel.Text =
                 $"Profile: {GetProfileDisplayName(current.Profile)}\r\n" +
@@ -401,9 +499,11 @@ namespace MtfTexPaintDotNet
         {
             return mode switch
             {
-                Re5CompressionMode.Dxt1 => "DXT1",
-                Re5CompressionMode.Dxt3 => "DXT3",
-                Re5CompressionMode.Dxt5 => "DXT5",
+                Re5CompressionMode.Dxt1 => "BC1 (Linear, DXT1)",
+                Re5CompressionMode.Dxt3 => "BC2 (Linear, DXT3)",
+                Re5CompressionMode.Dxt5 => "BC3 (Linear, DXT5)",
+                Re5CompressionMode.Bc5 => "BC5 (Linear, Unsigned)",
+                Re5CompressionMode.Rgba8 => "RGBA8 (Linear)",
                 _ => "Auto",
             };
         }
@@ -412,8 +512,8 @@ namespace MtfTexPaintDotNet
         {
             return profile switch
             {
-                MtfGameProfile.RE6 => "RE6 2D texture target. Save currently writes the common BC1/BC3 RE6 container path.",
-                _ => "RE5 2D texture target. Uses the current working RE5 save backend.",
+                MtfGameProfile.RE6 => "RE6 2D texture target. Shows only RE6 save modes: BC1, BC3, BC5, and RGBA8.",
+                _ => "RE5 2D texture target. Shows only RE5 save modes: BC1, BC2, and BC3.",
             };
         }
     }

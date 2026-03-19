@@ -8,7 +8,7 @@ namespace MtfTexPaintDotNet
     {
         public MtfTexFileType()
             : base(
-                "MT Framework TEX",
+                "MT Framework TEX (RE5/RE6 profiles)",
                 new FileTypeOptions
                 {
                     LoadExtensions = new[] { ".tex" },

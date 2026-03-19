@@ -41,10 +41,6 @@ namespace MtfTexPaintDotNet
             if (output == null) throw new ArgumentNullException(nameof(output));
             if (rgba32 == null) throw new ArgumentNullException(nameof(rgba32));
             if (width <= 0 || height <= 0) throw new ArgumentOutOfRangeException(nameof(width));
-            if ((width & 3) != 0)
-            {
-                throw new NotSupportedException("RE6 TEX save currently requires a width divisible by 4.");
-            }
             if (rgba32.Length != checked(width * height * 4))
             {
                 throw new ArgumentException("RGBA buffer size does not match image dimensions.", nameof(rgba32));
@@ -58,8 +54,8 @@ namespace MtfTexPaintDotNet
                 chosenCompression = NeedsAlpha(preparedRgba) ? Re5CompressionMode.Dxt5 : Re5CompressionMode.Dxt1;
             }
 
-            // RE6 common 2D save path currently supports BC1 and BC3 only.
-            // If DXT3 is selected in the shared UI, coerce it to BC3/DXT5-equivalent.
+            // RE6 common 2D save path supports BC1, BC3, BC5, and RGBA8.
+            // DXT3 is coerced to BC3 because RE6 does not use a DXT3-tagged path here.
             if (chosenCompression == Re5CompressionMode.Dxt3)
             {
                 chosenCompression = Re5CompressionMode.Dxt5;
@@ -68,14 +64,23 @@ namespace MtfTexPaintDotNet
             uint formatCode = chosenCompression switch
             {
                 Re5CompressionMode.Dxt5 => 0x00011801u,
+                Re5CompressionMode.Rgba8 => 0x00012801u,
+                Re5CompressionMode.Bc5 => 0x00011F01u,
                 _ => 0x00011401u,
             };
 
             BcFormat format = chosenCompression switch
             {
                 Re5CompressionMode.Dxt5 => BcFormat.BC3,
+                Re5CompressionMode.Rgba8 => BcFormat.RGBA8,
+                Re5CompressionMode.Bc5 => BcFormat.BC5,
                 _ => BcFormat.BC1,
             };
+
+            if (format != BcFormat.RGBA8 && (width & 3) != 0)
+            {
+                throw new NotSupportedException("RE6 BC-compressed TEX save currently requires a width divisible by 4. Use RGBA8 for NPOT/raw output.");
+            }
 
             List<MipLevel> mips = BuildMipChain(width, height, preparedRgba, settings.GenerateMipmaps);
             List<byte[]> mipPayloads = new List<byte[]>(mips.Count);
@@ -291,9 +296,16 @@ namespace MtfTexPaintDotNet
 
         private static byte[] EncodeMip(int width, int height, byte[] rgba32, BcFormat format)
         {
+            if (format == BcFormat.RGBA8)
+            {
+                byte[] raw = new byte[rgba32.Length];
+                Buffer.BlockCopy(rgba32, 0, raw, 0, rgba32.Length);
+                return raw;
+            }
+
             int blocksX = (width + 3) / 4;
             int blocksY = (height + 3) / 4;
-            int blockSize = format == BcFormat.BC1 ? 8 : 16;
+            int blockSize = (format == BcFormat.BC1 || format == BcFormat.BC4) ? 8 : 16;
             byte[] output = new byte[checked(blocksX * blocksY * blockSize)];
 
             byte[] block = new byte[16 * 4];
@@ -315,6 +327,10 @@ namespace MtfTexPaintDotNet
                             break;
                         case BcFormat.BC3:
                             EncodeBc3Block(block, output, dst);
+                            dst += 16;
+                            break;
+                        case BcFormat.BC5:
+                            EncodeBc5Block(block, output, dst);
                             dst += 16;
                             break;
                     }
@@ -358,6 +374,56 @@ namespace MtfTexPaintDotNet
         {
             EncodeAlphaBlock(blockRgba, output, outputOffset);
             EncodeBc1Block(blockRgba, output, outputOffset + 8);
+        }
+
+        private static void EncodeBc5Block(byte[] blockRgba, byte[] output, int outputOffset)
+        {
+            EncodeBc4ChannelBlock(blockRgba, 0, output, outputOffset + 0);
+            EncodeBc4ChannelBlock(blockRgba, 1, output, outputOffset + 8);
+        }
+
+        private static void EncodeBc4ChannelBlock(byte[] blockRgba, int channelOffset, byte[] output, int outputOffset)
+        {
+            byte minV = 255;
+            byte maxV = 0;
+            Span<byte> values = stackalloc byte[16];
+            for (int i = 0; i < 16; i++)
+            {
+                byte v = blockRgba[i * 4 + channelOffset];
+                values[i] = v;
+                if (v < minV) minV = v;
+                if (v > maxV) maxV = v;
+            }
+
+            byte a0 = maxV;
+            byte a1 = minV;
+            Span<byte> palette = stackalloc byte[8];
+            BuildAlphaPalette(a0, a1, palette);
+
+            ulong bits = 0;
+            for (int i = 0; i < 16; i++)
+            {
+                int best = 0;
+                int bestDist = int.MaxValue;
+                int v = values[i];
+                for (int p = 0; p < 8; p++)
+                {
+                    int dist = Math.Abs(v - palette[p]);
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        best = p;
+                    }
+                }
+                bits |= ((ulong)best & 0x7UL) << (i * 3);
+            }
+
+            output[outputOffset + 0] = a0;
+            output[outputOffset + 1] = a1;
+            for (int i = 0; i < 6; i++)
+            {
+                output[outputOffset + 2 + i] = (byte)((bits >> (i * 8)) & 0xFF);
+            }
         }
 
         private static void EncodeAlphaBlock(byte[] blockRgba, byte[] output, int outputOffset)

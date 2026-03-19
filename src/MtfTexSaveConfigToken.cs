@@ -15,6 +15,8 @@ namespace MtfTexPaintDotNet
         Dxt1 = 1,
         Dxt3 = 2,
         Dxt5 = 3,
+        Rgba8 = 4,
+        Bc5 = 5,
     }
 
     public enum Re5AlphaMode
