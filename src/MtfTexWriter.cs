@@ -2,21 +2,24 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using PaintDotNet;
 
 namespace MtfTexPaintDotNet
 {
     internal readonly struct Re5ResolvedSaveSettings
     {
-        public Re5ResolvedSaveSettings(Re5CompressionMode compression, bool generateMipmaps, bool forceOpaque)
+        public Re5ResolvedSaveSettings(Re5CompressionMode compression, bool generateMipmaps, bool forceOpaque, MtfMipResamplingAlgorithm mipResampling)
         {
             Compression = compression;
             GenerateMipmaps = generateMipmaps;
             ForceOpaque = forceOpaque;
+            MipResampling = mipResampling;
         }
 
         public Re5CompressionMode Compression { get; }
         public bool GenerateMipmaps { get; }
         public bool ForceOpaque { get; }
+        public MtfMipResamplingAlgorithm MipResampling { get; }
     }
 
     internal static class Re5SaveDefaults
@@ -28,7 +31,8 @@ namespace MtfTexPaintDotNet
             return new Re5ResolvedSaveSettings(
                 token.Compression,
                 token.GenerateMipmaps,
-                token.AlphaMode == Re5AlphaMode.ForceOpaque);
+                token.AlphaMode == Re5AlphaMode.ForceOpaque,
+                token.MipResampling);
         }
     }
 
@@ -82,7 +86,7 @@ namespace MtfTexPaintDotNet
                 throw new NotSupportedException("RE6 BC-compressed TEX save currently requires a width divisible by 4. Use RGBA8 for NPOT/raw output.");
             }
 
-            List<MipLevel> mips = BuildMipChain(width, height, preparedRgba, settings.GenerateMipmaps);
+            List<MipLevel> mips = BuildMipChain(width, height, preparedRgba, settings.GenerateMipmaps, settings.MipResampling);
             List<byte[]> mipPayloads = new List<byte[]>(mips.Count);
             foreach (MipLevel mip in mips)
             {
@@ -160,7 +164,7 @@ namespace MtfTexPaintDotNet
                 _ => BcFormat.BC1,
             };
 
-            List<MipLevel> mips = BuildMipChain(width, height, preparedRgba, settings.GenerateMipmaps);
+            List<MipLevel> mips = BuildMipChain(width, height, preparedRgba, settings.GenerateMipmaps, settings.MipResampling);
             List<byte[]> mipPayloads = new List<byte[]>(mips.Count);
             foreach (MipLevel mip in mips)
             {
@@ -233,26 +237,27 @@ namespace MtfTexPaintDotNet
             return false;
         }
 
-        private static List<MipLevel> BuildMipChain(int width, int height, byte[] rgba32, bool generateMipmaps)
+        private static List<MipLevel> BuildMipChain(int width, int height, byte[] rgba32, bool generateMipmaps, MtfMipResamplingAlgorithm mipResampling)
         {
             List<MipLevel> mips = new List<MipLevel>();
-            int w = width;
-            int h = height;
-            byte[] current = rgba32;
-            mips.Add(new MipLevel(w, h, current));
+            mips.Add(new MipLevel(width, height, rgba32));
 
             if (!generateMipmaps)
             {
                 return mips;
             }
 
+            using Surface sourceSurface = SurfaceFromRgba(width, height, rgba32);
+            using Surface? opaqueSourceSurface = HasTransparency(rgba32) ? SurfaceFromRgba(width, height, MakeOpaqueCopy(rgba32)) : null;
+
+            int w = width;
+            int h = height;
             while (w > 1 || h > 1)
             {
                 int nextW = Math.Max(1, w / 2);
                 int nextH = Math.Max(1, h / 2);
-                byte[] next = Downsample2x2(current, w, h, nextW, nextH);
+                byte[] next = ResizeRgba(sourceSurface, opaqueSourceSurface, nextW, nextH, mipResampling);
                 mips.Add(new MipLevel(nextW, nextH, next));
-                current = next;
                 w = nextW;
                 h = nextH;
             }
@@ -260,38 +265,97 @@ namespace MtfTexPaintDotNet
             return mips;
         }
 
-        private static byte[] Downsample2x2(byte[] src, int srcWidth, int srcHeight, int dstWidth, int dstHeight)
+        private static bool HasTransparency(byte[] rgba32)
         {
-            byte[] dst = new byte[checked(dstWidth * dstHeight * 4)];
-
-            for (int y = 0; y < dstHeight; y++)
+            for (int i = 3; i < rgba32.Length; i += 4)
             {
-                int sy0 = Math.Min(srcHeight - 1, y * 2);
-                int sy1 = Math.Min(srcHeight - 1, sy0 + 1);
-
-                for (int x = 0; x < dstWidth; x++)
+                if (rgba32[i] != 255)
                 {
-                    int sx0 = Math.Min(srcWidth - 1, x * 2);
-                    int sx1 = Math.Min(srcWidth - 1, sx0 + 1);
+                    return true;
+                }
+            }
 
-                    int[] p =
-                    {
-                        (sy0 * srcWidth + sx0) * 4,
-                        (sy0 * srcWidth + sx1) * 4,
-                        (sy1 * srcWidth + sx0) * 4,
-                        (sy1 * srcWidth + sx1) * 4,
-                    };
+            return false;
+        }
 
-                    int dstIndex = (y * dstWidth + x) * 4;
-                    for (int c = 0; c < 4; c++)
+        private static Surface SurfaceFromRgba(int width, int height, byte[] rgba32)
+        {
+            Surface surface = new Surface(width, height);
+            int src = 0;
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    byte r = rgba32[src + 0];
+                    byte g = rgba32[src + 1];
+                    byte b = rgba32[src + 2];
+                    byte a = rgba32[src + 3];
+                    surface[x, y] = ColorBgra.FromBgra(b, g, r, a);
+                    src += 4;
+                }
+            }
+            return surface;
+        }
+
+        private static byte[] RgbaFromSurface(Surface surface)
+        {
+            byte[] rgba = new byte[checked(surface.Width * surface.Height * 4)];
+            int dst = 0;
+            for (int y = 0; y < surface.Height; y++)
+            {
+                for (int x = 0; x < surface.Width; x++)
+                {
+                    ColorBgra c = surface[x, y];
+                    rgba[dst + 0] = c.R;
+                    rgba[dst + 1] = c.G;
+                    rgba[dst + 2] = c.B;
+                    rgba[dst + 3] = c.A;
+                    dst += 4;
+                }
+            }
+            return rgba;
+        }
+
+        private static byte[] ResizeRgba(Surface sourceSurface, Surface? opaqueSourceSurface, int width, int height, MtfMipResamplingAlgorithm mipResampling)
+        {
+            ResamplingAlgorithm algorithm = ToPaintDotNetResampling(mipResampling);
+            const FitSurfaceOptions options = FitSurfaceOptions.Default;
+
+            using Surface mipSurface = new Surface(width, height);
+            mipSurface.FitSurface(algorithm, sourceSurface, options);
+
+            if (opaqueSourceSurface != null)
+            {
+                using Surface colorSurface = new Surface(width, height);
+                colorSurface.FitSurface(algorithm, opaqueSourceSurface, options);
+
+                for (int y = 0; y < height; y++)
+                {
+                    for (int x = 0; x < width; x++)
                     {
-                        int sum = src[p[0] + c] + src[p[1] + c] + src[p[2] + c] + src[p[3] + c];
-                        dst[dstIndex + c] = (byte)((sum + 2) / 4);
+                        ColorBgra color = colorSurface[x, y];
+                        ColorBgra alpha = mipSurface[x, y];
+                        mipSurface[x, y] = ColorBgra.FromBgra(color.B, color.G, color.R, alpha.A);
                     }
                 }
             }
 
-            return dst;
+            return RgbaFromSurface(mipSurface);
+        }
+
+        private static ResamplingAlgorithm ToPaintDotNetResampling(MtfMipResamplingAlgorithm mipResampling)
+        {
+            return mipResampling switch
+            {
+                MtfMipResamplingAlgorithm.CubicSmooth => ResamplingAlgorithm.CubicSmooth,
+                MtfMipResamplingAlgorithm.Linear => ResamplingAlgorithm.Linear,
+                MtfMipResamplingAlgorithm.LinearLowQuality => ResamplingAlgorithm.LinearLowQuality,
+                MtfMipResamplingAlgorithm.AdaptiveHighQuality => ResamplingAlgorithm.AdaptiveHighQuality,
+                MtfMipResamplingAlgorithm.Lanczos3 => ResamplingAlgorithm.Lanczos3,
+                MtfMipResamplingAlgorithm.Fant => ResamplingAlgorithm.Fant,
+                MtfMipResamplingAlgorithm.NearestNeighbor => ResamplingAlgorithm.NearestNeighbor,
+                _ => ResamplingAlgorithm.Cubic,
+            };
         }
 
         private static byte[] EncodeMip(int width, int height, byte[] rgba32, BcFormat format)

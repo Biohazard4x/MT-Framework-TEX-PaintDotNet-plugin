@@ -29,6 +29,7 @@ namespace MtfTexPaintDotNet
 
         private readonly ComboBox compressionCombo;
         private readonly CheckBox generateMipmapsCheck;
+        private readonly ComboBox mipFilterCombo;
         private readonly ComboBox alphaCombo;
 
         private readonly Label summaryLabel;
@@ -66,11 +67,7 @@ namespace MtfTexPaintDotNet
             };
             stack.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
 
-            profileCombo = MakeCombo(new[]
-            {
-                "RE5",
-                "RE6",
-            });
+            profileCombo = MakeCombo(new[] { "Resident Evil 5", "Resident Evil 6" });
             profileCombo.SelectedIndexChanged += OnProfileChanged;
 
             profileDescriptionLabel = new Label
@@ -95,6 +92,19 @@ namespace MtfTexPaintDotNet
                 Margin = Padding.Empty,
             };
             generateMipmapsCheck.CheckedChanged += OnAnySettingChanged;
+
+            mipFilterCombo = MakeCombo(new[]
+            {
+                "Bicubic",
+                "Bicubic (Smooth)",
+                "Bilinear",
+                "Bilinear (Low Quality)",
+                "Adaptive (Sharp)",
+                "Lanczos",
+                "Fant",
+                "Nearest Neighbor",
+            });
+            mipFilterCombo.SelectedIndexChanged += OnAnySettingChanged;
 
             alphaCombo = MakeCombo(new[] { "Preserve alpha", "Force opaque" });
             alphaCombo.SelectedIndexChanged += OnAnySettingChanged;
@@ -124,7 +134,8 @@ namespace MtfTexPaintDotNet
                 CreateField("Mode", compressionCombo)));
 
             AddStackRow(CreateGroup("Mipmaps",
-                generateMipmapsCheck));
+                generateMipmapsCheck,
+                CreateField("Filter", mipFilterCombo)));
 
             AddStackRow(CreateGroup("Alpha",
                 CreateField("Handling", alphaCombo)));
@@ -161,9 +172,11 @@ namespace MtfTexPaintDotNet
                 profileCombo.SelectedIndex = ClampIndex((int)profile, profileCombo.Items.Count);
                 ConfigureCompressionOptions(profile, resolved.Compression);
                 generateMipmapsCheck.Checked = resolved.GenerateMipmaps;
+                mipFilterCombo.SelectedIndex = ClampIndex((int)current.MipResampling, mipFilterCombo.Items.Count);
                 alphaCombo.SelectedIndex = resolved.ForceOpaque ? (int)Re5AlphaMode.ForceOpaque : (int)Re5AlphaMode.Preserve;
 
                 profileDescriptionLabel.Text = GetProfileDescription(profile);
+                UpdateMipFilterEnabledState();
                 RefreshSummary(ReadTokenFromWidget());
             }
             finally
@@ -205,6 +218,7 @@ namespace MtfTexPaintDotNet
                 return;
             }
 
+            UpdateMipFilterEnabledState();
             UpdateToken();
             RefreshSummary(Token as MtfTexSaveConfigToken ?? ReadTokenFromWidget());
         }
@@ -225,7 +239,9 @@ namespace MtfTexPaintDotNet
 
             ConfigureCompressionOptions(profile, compression);
             generateMipmapsCheck.Checked = true;
+            mipFilterCombo.SelectedIndex = (int)MtfMipResamplingAlgorithm.Cubic;
             alphaCombo.SelectedIndex = (int)Re5AlphaMode.Preserve;
+            UpdateMipFilterEnabledState();
         }
 
         private void ConfigureCompressionOptions(MtfGameProfile profile, Re5CompressionMode preferredMode)
@@ -310,6 +326,7 @@ namespace MtfTexPaintDotNet
                 Profile = GetSelectedProfile(),
                 Compression = GetSelectedCompressionMode(),
                 GenerateMipmaps = generateMipmapsCheck.Checked,
+                MipResampling = GetSelectedMipFilter(),
                 AlphaMode = (Re5AlphaMode)ClampIndex(alphaCombo.SelectedIndex, alphaCombo.Items.Count),
             };
         }
@@ -317,6 +334,17 @@ namespace MtfTexPaintDotNet
         private MtfGameProfile GetSelectedProfile()
         {
             return (MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count);
+        }
+
+        private void UpdateMipFilterEnabledState()
+        {
+            mipFilterCombo.Enabled = generateMipmapsCheck.Checked;
+        }
+
+        private MtfMipResamplingAlgorithm GetSelectedMipFilter()
+        {
+            int idx = ClampIndex(mipFilterCombo.SelectedIndex, mipFilterCombo.Items.Count);
+            return (MtfMipResamplingAlgorithm)idx;
         }
 
         private Re5CompressionMode GetSelectedCompressionMode()
@@ -339,6 +367,7 @@ namespace MtfTexPaintDotNet
                 $"Profile: {GetProfileDisplayName(current.Profile)}\r\n" +
                 $"Compression: {GetCompressionDisplayName(current.Compression)}\r\n" +
                 $"Mipmaps: {(current.GenerateMipmaps ? "Generate full chain" : "Top level only")}\r\n" +
+                $"Mip Filter: {(current.GenerateMipmaps ? GetMipFilterDisplayName(current.MipResampling) : "N/A")}\r\n" +
                 $"Alpha: {(current.AlphaMode == Re5AlphaMode.ForceOpaque ? "Force opaque" : "Preserve alpha")}\r\n" +
                 targetLine;
 
@@ -455,6 +484,7 @@ namespace MtfTexPaintDotNet
                 int inner = Math.Max(120, available - 28);
                 profileCombo.Width = inner;
                 compressionCombo.Width = inner;
+                mipFilterCombo.Width = inner;
                 alphaCombo.Width = inner;
                 defaultsButton.Width = inner;
                 profileDescriptionLabel.MaximumSize = new Size(inner, 0);
@@ -505,6 +535,21 @@ namespace MtfTexPaintDotNet
                 Re5CompressionMode.Bc5 => "BC5 (Linear, Unsigned)",
                 Re5CompressionMode.Rgba8 => "RGBA8 (Linear)",
                 _ => "Auto",
+            };
+        }
+
+        private static string GetMipFilterDisplayName(MtfMipResamplingAlgorithm algorithm)
+        {
+            return algorithm switch
+            {
+                MtfMipResamplingAlgorithm.CubicSmooth => "Bicubic (Smooth)",
+                MtfMipResamplingAlgorithm.Linear => "Bilinear",
+                MtfMipResamplingAlgorithm.LinearLowQuality => "Bilinear (Low Quality)",
+                MtfMipResamplingAlgorithm.AdaptiveHighQuality => "Adaptive (Sharp)",
+                MtfMipResamplingAlgorithm.Lanczos3 => "Lanczos",
+                MtfMipResamplingAlgorithm.Fant => "Fant",
+                MtfMipResamplingAlgorithm.NearestNeighbor => "Nearest Neighbor",
+                _ => "Bicubic",
             };
         }
 
