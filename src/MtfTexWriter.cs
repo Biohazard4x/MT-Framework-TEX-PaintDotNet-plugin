@@ -34,6 +34,95 @@ namespace MtfTexPaintDotNet
 
     internal static class MtfTexWriter
     {
+
+
+        public static void WriteRe6Pc(Stream output, int width, int height, byte[] rgba32, Re5ResolvedSaveSettings settings)
+        {
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (rgba32 == null) throw new ArgumentNullException(nameof(rgba32));
+            if (width <= 0 || height <= 0) throw new ArgumentOutOfRangeException(nameof(width));
+            if ((width & 3) != 0)
+            {
+                throw new NotSupportedException("RE6 TEX save currently requires a width divisible by 4.");
+            }
+            if (rgba32.Length != checked(width * height * 4))
+            {
+                throw new ArgumentException("RGBA buffer size does not match image dimensions.", nameof(rgba32));
+            }
+
+            byte[] preparedRgba = settings.ForceOpaque ? MakeOpaqueCopy(rgba32) : rgba32;
+
+            Re5CompressionMode chosenCompression = settings.Compression;
+            if (chosenCompression == Re5CompressionMode.Auto)
+            {
+                chosenCompression = NeedsAlpha(preparedRgba) ? Re5CompressionMode.Dxt5 : Re5CompressionMode.Dxt1;
+            }
+
+            // RE6 common 2D save path currently supports BC1 and BC3 only.
+            // If DXT3 is selected in the shared UI, coerce it to BC3/DXT5-equivalent.
+            if (chosenCompression == Re5CompressionMode.Dxt3)
+            {
+                chosenCompression = Re5CompressionMode.Dxt5;
+            }
+
+            uint formatCode = chosenCompression switch
+            {
+                Re5CompressionMode.Dxt5 => 0x00011801u,
+                _ => 0x00011401u,
+            };
+
+            BcFormat format = chosenCompression switch
+            {
+                Re5CompressionMode.Dxt5 => BcFormat.BC3,
+                _ => BcFormat.BC1,
+            };
+
+            List<MipLevel> mips = BuildMipChain(width, height, preparedRgba, settings.GenerateMipmaps);
+            List<byte[]> mipPayloads = new List<byte[]>(mips.Count);
+            foreach (MipLevel mip in mips)
+            {
+                mipPayloads.Add(EncodeMip(mip.Width, mip.Height, mip.Rgba32, format));
+            }
+
+            int headerSize = 0x14 + Math.Max(0, mips.Count - 1) * 4;
+            List<int> mipOffsets = new List<int>(mips.Count);
+            int runningOffset = headerSize;
+            foreach (byte[] payload in mipPayloads)
+            {
+                mipOffsets.Add(runningOffset);
+                runningOffset += payload.Length;
+            }
+
+            int packedDims = PackRe6Dims(width, height);
+
+            using BinaryWriter bw = new BinaryWriter(output, Encoding.ASCII, leaveOpen: true);
+
+            bw.Write((byte)'T');
+            bw.Write((byte)'E');
+            bw.Write((byte)'X');
+            bw.Write((byte)0);
+            bw.Write((byte)0x9A);
+            bw.Write((byte)0x00);
+            bw.Write((byte)0x00);
+            bw.Write((byte)0x20);
+            bw.Write((byte)mips.Count);
+            bw.Write((byte)(packedDims & 0xFF));
+            bw.Write((byte)((packedDims >> 8) & 0xFF));
+            bw.Write((byte)((packedDims >> 16) & 0xFF));
+            bw.Write(formatCode);
+            bw.Write(headerSize);
+
+            for (int i = 1; i < mipOffsets.Count; i++)
+            {
+                bw.Write(mipOffsets[i]);
+            }
+
+            foreach (byte[] payload in mipPayloads)
+            {
+                bw.Write(payload);
+            }
+        }
+
         public static void WriteRe5Pc(Stream output, int width, int height, byte[] rgba32, Re5ResolvedSaveSettings settings)
         {
             if (output == null) throw new ArgumentNullException(nameof(output));
@@ -474,6 +563,28 @@ namespace MtfTexPaintDotNet
             r = ((value >> 11) & 31) * 255 / 31;
             g = ((value >> 5) & 63) * 255 / 63;
             b = (value & 31) * 255 / 31;
+        }
+
+
+
+        private static int PackRe6Dims(int width, int height)
+        {
+            if ((width & 3) != 0)
+            {
+                throw new NotSupportedException("RE6 TEX width must be divisible by 4.");
+            }
+
+            int widthUnits = width / 4;
+            if ((widthUnits & ~0x7FF) != 0)
+            {
+                throw new NotSupportedException($"RE6 TEX width {width} is out of range.");
+            }
+            if ((height & ~0x1FFF) != 0)
+            {
+                throw new NotSupportedException($"RE6 TEX height {height} is out of range.");
+            }
+
+            return widthUnits | (height << 11);
         }
 
         private readonly struct MipLevel

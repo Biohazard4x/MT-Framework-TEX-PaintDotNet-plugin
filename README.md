@@ -20,3 +20,8 @@ Current known limits:
 - RE6 volume textures are detected but not loaded yet
 - RE6 save/export is not implemented yet
 - Some rare RE6 special textures may still need per-format handling later
+
+
+Current save profiles:
+- RE5: working 2D save backend
+- RE6: UI/profile groundwork only; save intentionally blocked until a real RE6 writer is implemented

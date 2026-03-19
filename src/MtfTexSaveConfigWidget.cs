@@ -54,10 +54,8 @@ namespace MtfTexPaintDotNet
 
             profileCombo = MakeCombo(new[]
             {
-                "RE5 Generic",
-                "RE5 BM",
-                "RE5 MM",
-                "RE5 NM",
+                "RE5",
+                "RE6",
             });
             profileCombo.SelectedIndexChanged += OnProfileChanged;
 
@@ -99,7 +97,7 @@ namespace MtfTexPaintDotNet
             defaultsButton.Click += (_, _) => ResetToDefaults();
 
             AddStackRow(CreateGroup("Profile",
-                CreateField("Preset", profileCombo),
+                CreateField("Target Game", profileCombo),
                 profileDescriptionLabel));
 
             AddStackRow(CreateGroup("Compression",
@@ -144,7 +142,7 @@ namespace MtfTexPaintDotNet
                 generateMipmapsCheck.Checked = resolved.GenerateMipmaps;
                 alphaCombo.SelectedIndex = resolved.ForceOpaque ? (int)Re5AlphaMode.ForceOpaque : (int)Re5AlphaMode.Preserve;
 
-                profileDescriptionLabel.Text = GetProfileDescription((Re5SaveProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count));
+                profileDescriptionLabel.Text = GetProfileDescription((MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count));
                 RefreshSummary(ReadTokenFromWidget());
             }
             finally
@@ -165,8 +163,8 @@ namespace MtfTexPaintDotNet
             initializing = true;
             try
             {
-                ApplyProfileDefaultsToControls((Re5SaveProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count));
-                profileDescriptionLabel.Text = GetProfileDescription((Re5SaveProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count));
+                ApplyProfileDefaultsToControls((MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count));
+                profileDescriptionLabel.Text = GetProfileDescription((MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count));
             }
             finally
             {
@@ -185,6 +183,20 @@ namespace MtfTexPaintDotNet
                 return;
             }
 
+            if ((MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count) == MtfGameProfile.RE6 &&
+                (Re5CompressionMode)ClampIndex(compressionCombo.SelectedIndex, compressionCombo.Items.Count) == Re5CompressionMode.Dxt3)
+            {
+                initializing = true;
+                try
+                {
+                    compressionCombo.SelectedIndex = (int)Re5CompressionMode.Dxt5;
+                }
+                finally
+                {
+                    initializing = false;
+                }
+            }
+
             UpdateToken();
             RefreshSummary(Token as MtfTexSaveConfigToken ?? ReadTokenFromWidget());
         }
@@ -195,12 +207,11 @@ namespace MtfTexPaintDotNet
             UpdateToken();
         }
 
-        private void ApplyProfileDefaultsToControls(Re5SaveProfile profile)
+        private void ApplyProfileDefaultsToControls(MtfGameProfile profile)
         {
             Re5CompressionMode compression = profile switch
             {
-                Re5SaveProfile.MM => Re5CompressionMode.Dxt5,
-                Re5SaveProfile.NM => Re5CompressionMode.Dxt5,
+                MtfGameProfile.RE6 => Re5CompressionMode.Dxt5,
                 _ => Re5CompressionMode.Auto,
             };
 
@@ -213,7 +224,7 @@ namespace MtfTexPaintDotNet
         {
             return new MtfTexSaveConfigToken
             {
-                Profile = (Re5SaveProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count),
+                Profile = (MtfGameProfile)ClampIndex(profileCombo.SelectedIndex, profileCombo.Items.Count),
                 Compression = (Re5CompressionMode)ClampIndex(compressionCombo.SelectedIndex, compressionCombo.Items.Count),
                 GenerateMipmaps = generateMipmapsCheck.Checked,
                 AlphaMode = (Re5AlphaMode)ClampIndex(alphaCombo.SelectedIndex, alphaCombo.Items.Count),
@@ -222,12 +233,16 @@ namespace MtfTexPaintDotNet
 
         private void RefreshSummary(MtfTexSaveConfigToken current)
         {
+            string targetLine = current.Profile == MtfGameProfile.RE6
+                ? "Target: RE6 2D profile (BC1/BC3 save backend)"
+                : "Target: RE5 2D profile";
+
             summaryLabel.Text =
                 $"Profile: {GetProfileDisplayName(current.Profile)}\r\n" +
                 $"Compression: {GetCompressionDisplayName(current.Compression)}\r\n" +
                 $"Mipmaps: {(current.GenerateMipmaps ? "Generate full chain" : "Top level only")}\r\n" +
                 $"Alpha: {(current.AlphaMode == Re5AlphaMode.ForceOpaque ? "Force opaque" : "Preserve alpha")}\r\n" +
-                "Header: Safe RE5 PC generic";
+                targetLine;
 
             UpdateLayoutWidths();
         }
@@ -373,14 +388,12 @@ namespace MtfTexPaintDotNet
             return value;
         }
 
-        private static string GetProfileDisplayName(Re5SaveProfile profile)
+        private static string GetProfileDisplayName(MtfGameProfile profile)
         {
             return profile switch
             {
-                Re5SaveProfile.BM => "RE5 BM",
-                Re5SaveProfile.MM => "RE5 MM",
-                Re5SaveProfile.NM => "RE5 NM",
-                _ => "RE5 Generic",
+                MtfGameProfile.RE6 => "RE6",
+                _ => "RE5",
             };
         }
 
@@ -395,14 +408,12 @@ namespace MtfTexPaintDotNet
             };
         }
 
-        private static string GetProfileDescription(Re5SaveProfile profile)
+        private static string GetProfileDescription(MtfGameProfile profile)
         {
             return profile switch
             {
-                Re5SaveProfile.BM => "Color texture preset. Uses color-friendly defaults.",
-                Re5SaveProfile.MM => "Material or mask preset. Defaults toward DXT5 for safer channel retention.",
-                Re5SaveProfile.NM => "Normal or data texture preset. Defaults toward DXT5 with mipmaps on.",
-                _ => "Neutral fallback preset for a generic RE5 PC TEX file.",
+                MtfGameProfile.RE6 => "RE6 2D texture target. Save currently writes the common BC1/BC3 RE6 container path.",
+                _ => "RE5 2D texture target. Uses the current working RE5 save backend.",
             };
         }
     }

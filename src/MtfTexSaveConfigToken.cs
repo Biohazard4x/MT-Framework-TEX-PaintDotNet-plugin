@@ -3,12 +3,10 @@ using PaintDotNet;
 
 namespace MtfTexPaintDotNet
 {
-    public enum Re5SaveProfile
+    public enum MtfGameProfile
     {
-        Generic = 0,
-        BM = 1,
-        MM = 2,
-        NM = 3,
+        RE5 = 0,
+        RE6 = 1,
     }
 
     public enum Re5CompressionMode
@@ -28,14 +26,14 @@ namespace MtfTexPaintDotNet
     [Serializable]
     public sealed class MtfTexSaveConfigToken : SaveConfigToken
     {
-        public Re5SaveProfile Profile { get; set; }
+        public MtfGameProfile Profile { get; set; }
         public Re5CompressionMode Compression { get; set; }
         public bool GenerateMipmaps { get; set; }
         public Re5AlphaMode AlphaMode { get; set; }
 
         public MtfTexSaveConfigToken()
         {
-            Profile = Re5SaveProfile.Generic;
+            Profile = MtfGameProfile.RE5;
             Compression = Re5CompressionMode.Auto;
             GenerateMipmaps = true;
             AlphaMode = Re5AlphaMode.Preserve;
@@ -63,7 +61,7 @@ namespace MtfTexPaintDotNet
 
             if (!Enum.IsDefined(Profile))
             {
-                Profile = Re5SaveProfile.Generic;
+                Profile = MtfGameProfile.RE5;
             }
 
             if (!Enum.IsDefined(Compression))
