@@ -8,7 +8,7 @@ namespace MtfTexPaintDotNet
     {
         public MtfTexFileType()
             : base(
-                "MT Framework TEX (RE5 PC)",
+                "MT Framework TEX (RE5/RE6 profiles)",
                 new FileTypeOptions
                 {
                     LoadExtensions = new[] { ".tex" },
@@ -52,7 +52,7 @@ namespace MtfTexPaintDotNet
 
             BitmapLayer layer = new BitmapLayer(surface, true)
             {
-                Name = "RE5 TEX"
+                Name = decoded.SourceLabel
             };
 
             Document document = new Document(decoded.Width, decoded.Height);
@@ -85,8 +85,17 @@ namespace MtfTexPaintDotNet
             }
 
             MtfTexSaveConfigToken typedToken = token as MtfTexSaveConfigToken ?? new MtfTexSaveConfigToken();
+
             Re5ResolvedSaveSettings resolved = Re5SaveDefaults.Resolve(typedToken);
-            MtfTexWriter.WriteRe5Pc(output, width, height, rgba, resolved);
+
+            if (typedToken.Profile == MtfGameProfile.RE6)
+            {
+                MtfTexWriter.WriteRe6Pc(output, width, height, rgba, resolved);
+            }
+            else
+            {
+                MtfTexWriter.WriteRe5Pc(output, width, height, rgba, resolved);
+            }
 
             progressCallback?.Invoke(this, new ProgressEventArgs(100.0));
         }

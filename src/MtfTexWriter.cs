@@ -2,21 +2,24 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using PaintDotNet;
 
 namespace MtfTexPaintDotNet
 {
     internal readonly struct Re5ResolvedSaveSettings
     {
-        public Re5ResolvedSaveSettings(Re5CompressionMode compression, bool generateMipmaps, bool forceOpaque)
+        public Re5ResolvedSaveSettings(Re5CompressionMode compression, bool generateMipmaps, bool forceOpaque, MtfMipResamplingAlgorithm mipResampling)
         {
             Compression = compression;
             GenerateMipmaps = generateMipmaps;
             ForceOpaque = forceOpaque;
+            MipResampling = mipResampling;
         }
 
         public Re5CompressionMode Compression { get; }
         public bool GenerateMipmaps { get; }
         public bool ForceOpaque { get; }
+        public MtfMipResamplingAlgorithm MipResampling { get; }
     }
 
     internal static class Re5SaveDefaults
@@ -28,12 +31,107 @@ namespace MtfTexPaintDotNet
             return new Re5ResolvedSaveSettings(
                 token.Compression,
                 token.GenerateMipmaps,
-                token.AlphaMode == Re5AlphaMode.ForceOpaque);
+                token.AlphaMode == Re5AlphaMode.ForceOpaque,
+                token.MipResampling);
         }
     }
 
     internal static class MtfTexWriter
     {
+
+
+        public static void WriteRe6Pc(Stream output, int width, int height, byte[] rgba32, Re5ResolvedSaveSettings settings)
+        {
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (rgba32 == null) throw new ArgumentNullException(nameof(rgba32));
+            if (width <= 0 || height <= 0) throw new ArgumentOutOfRangeException(nameof(width));
+            if (rgba32.Length != checked(width * height * 4))
+            {
+                throw new ArgumentException("RGBA buffer size does not match image dimensions.", nameof(rgba32));
+            }
+
+            byte[] preparedRgba = settings.ForceOpaque ? MakeOpaqueCopy(rgba32) : rgba32;
+
+            Re5CompressionMode chosenCompression = settings.Compression;
+            if (chosenCompression == Re5CompressionMode.Auto)
+            {
+                chosenCompression = NeedsAlpha(preparedRgba) ? Re5CompressionMode.Dxt5 : Re5CompressionMode.Dxt1;
+            }
+
+            // RE6 common 2D save path supports BC1, BC3, BC5, and RGBA8.
+            // DXT3 is coerced to BC3 because RE6 does not use a DXT3-tagged path here.
+            if (chosenCompression == Re5CompressionMode.Dxt3)
+            {
+                chosenCompression = Re5CompressionMode.Dxt5;
+            }
+
+            uint formatCode = chosenCompression switch
+            {
+                Re5CompressionMode.Dxt5 => 0x00011801u,
+                Re5CompressionMode.Rgba8 => 0x00012801u,
+                Re5CompressionMode.Bc5 => 0x00011F01u,
+                _ => 0x00011401u,
+            };
+
+            BcFormat format = chosenCompression switch
+            {
+                Re5CompressionMode.Dxt5 => BcFormat.BC3,
+                Re5CompressionMode.Rgba8 => BcFormat.RGBA8,
+                Re5CompressionMode.Bc5 => BcFormat.BC5,
+                _ => BcFormat.BC1,
+            };
+
+            if (format != BcFormat.RGBA8 && (width & 3) != 0)
+            {
+                throw new NotSupportedException("RE6 BC-compressed TEX save currently requires a width divisible by 4. Use RGBA8 for NPOT/raw output.");
+            }
+
+            List<MipLevel> mips = BuildMipChain(width, height, preparedRgba, settings.GenerateMipmaps, settings.MipResampling);
+            List<byte[]> mipPayloads = new List<byte[]>(mips.Count);
+            foreach (MipLevel mip in mips)
+            {
+                mipPayloads.Add(EncodeMip(mip.Width, mip.Height, mip.Rgba32, format));
+            }
+
+            int headerSize = 0x14 + Math.Max(0, mips.Count - 1) * 4;
+            List<int> mipOffsets = new List<int>(mips.Count);
+            int runningOffset = headerSize;
+            foreach (byte[] payload in mipPayloads)
+            {
+                mipOffsets.Add(runningOffset);
+                runningOffset += payload.Length;
+            }
+
+            int packedDims = PackRe6Dims(width, height);
+
+            using BinaryWriter bw = new BinaryWriter(output, Encoding.ASCII, leaveOpen: true);
+
+            bw.Write((byte)'T');
+            bw.Write((byte)'E');
+            bw.Write((byte)'X');
+            bw.Write((byte)0);
+            bw.Write((byte)0x9A);
+            bw.Write((byte)0x00);
+            bw.Write((byte)0x00);
+            bw.Write((byte)0x20);
+            bw.Write((byte)mips.Count);
+            bw.Write((byte)(packedDims & 0xFF));
+            bw.Write((byte)((packedDims >> 8) & 0xFF));
+            bw.Write((byte)((packedDims >> 16) & 0xFF));
+            bw.Write(formatCode);
+            bw.Write(headerSize);
+
+            for (int i = 1; i < mipOffsets.Count; i++)
+            {
+                bw.Write(mipOffsets[i]);
+            }
+
+            foreach (byte[] payload in mipPayloads)
+            {
+                bw.Write(payload);
+            }
+        }
+
         public static void WriteRe5Pc(Stream output, int width, int height, byte[] rgba32, Re5ResolvedSaveSettings settings)
         {
             if (output == null) throw new ArgumentNullException(nameof(output));
@@ -66,7 +164,7 @@ namespace MtfTexPaintDotNet
                 _ => BcFormat.BC1,
             };
 
-            List<MipLevel> mips = BuildMipChain(width, height, preparedRgba, settings.GenerateMipmaps);
+            List<MipLevel> mips = BuildMipChain(width, height, preparedRgba, settings.GenerateMipmaps, settings.MipResampling);
             List<byte[]> mipPayloads = new List<byte[]>(mips.Count);
             foreach (MipLevel mip in mips)
             {
@@ -139,26 +237,27 @@ namespace MtfTexPaintDotNet
             return false;
         }
 
-        private static List<MipLevel> BuildMipChain(int width, int height, byte[] rgba32, bool generateMipmaps)
+        private static List<MipLevel> BuildMipChain(int width, int height, byte[] rgba32, bool generateMipmaps, MtfMipResamplingAlgorithm mipResampling)
         {
             List<MipLevel> mips = new List<MipLevel>();
-            int w = width;
-            int h = height;
-            byte[] current = rgba32;
-            mips.Add(new MipLevel(w, h, current));
+            mips.Add(new MipLevel(width, height, rgba32));
 
             if (!generateMipmaps)
             {
                 return mips;
             }
 
+            using Surface sourceSurface = SurfaceFromRgba(width, height, rgba32);
+            using Surface? opaqueSourceSurface = HasTransparency(rgba32) ? SurfaceFromRgba(width, height, MakeOpaqueCopy(rgba32)) : null;
+
+            int w = width;
+            int h = height;
             while (w > 1 || h > 1)
             {
                 int nextW = Math.Max(1, w / 2);
                 int nextH = Math.Max(1, h / 2);
-                byte[] next = Downsample2x2(current, w, h, nextW, nextH);
+                byte[] next = ResizeRgba(sourceSurface, opaqueSourceSurface, nextW, nextH, mipResampling);
                 mips.Add(new MipLevel(nextW, nextH, next));
-                current = next;
                 w = nextW;
                 h = nextH;
             }
@@ -166,45 +265,111 @@ namespace MtfTexPaintDotNet
             return mips;
         }
 
-        private static byte[] Downsample2x2(byte[] src, int srcWidth, int srcHeight, int dstWidth, int dstHeight)
+        private static bool HasTransparency(byte[] rgba32)
         {
-            byte[] dst = new byte[checked(dstWidth * dstHeight * 4)];
-
-            for (int y = 0; y < dstHeight; y++)
+            for (int i = 3; i < rgba32.Length; i += 4)
             {
-                int sy0 = Math.Min(srcHeight - 1, y * 2);
-                int sy1 = Math.Min(srcHeight - 1, sy0 + 1);
-
-                for (int x = 0; x < dstWidth; x++)
+                if (rgba32[i] != 255)
                 {
-                    int sx0 = Math.Min(srcWidth - 1, x * 2);
-                    int sx1 = Math.Min(srcWidth - 1, sx0 + 1);
+                    return true;
+                }
+            }
 
-                    int[] p =
-                    {
-                        (sy0 * srcWidth + sx0) * 4,
-                        (sy0 * srcWidth + sx1) * 4,
-                        (sy1 * srcWidth + sx0) * 4,
-                        (sy1 * srcWidth + sx1) * 4,
-                    };
+            return false;
+        }
 
-                    int dstIndex = (y * dstWidth + x) * 4;
-                    for (int c = 0; c < 4; c++)
+        private static Surface SurfaceFromRgba(int width, int height, byte[] rgba32)
+        {
+            Surface surface = new Surface(width, height);
+            int src = 0;
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    byte r = rgba32[src + 0];
+                    byte g = rgba32[src + 1];
+                    byte b = rgba32[src + 2];
+                    byte a = rgba32[src + 3];
+                    surface[x, y] = ColorBgra.FromBgra(b, g, r, a);
+                    src += 4;
+                }
+            }
+            return surface;
+        }
+
+        private static byte[] RgbaFromSurface(Surface surface)
+        {
+            byte[] rgba = new byte[checked(surface.Width * surface.Height * 4)];
+            int dst = 0;
+            for (int y = 0; y < surface.Height; y++)
+            {
+                for (int x = 0; x < surface.Width; x++)
+                {
+                    ColorBgra c = surface[x, y];
+                    rgba[dst + 0] = c.R;
+                    rgba[dst + 1] = c.G;
+                    rgba[dst + 2] = c.B;
+                    rgba[dst + 3] = c.A;
+                    dst += 4;
+                }
+            }
+            return rgba;
+        }
+
+        private static byte[] ResizeRgba(Surface sourceSurface, Surface? opaqueSourceSurface, int width, int height, MtfMipResamplingAlgorithm mipResampling)
+        {
+            ResamplingAlgorithm algorithm = ToPaintDotNetResampling(mipResampling);
+            const FitSurfaceOptions options = FitSurfaceOptions.Default;
+
+            using Surface mipSurface = new Surface(width, height);
+            mipSurface.FitSurface(algorithm, sourceSurface, options);
+
+            if (opaqueSourceSurface != null)
+            {
+                using Surface colorSurface = new Surface(width, height);
+                colorSurface.FitSurface(algorithm, opaqueSourceSurface, options);
+
+                for (int y = 0; y < height; y++)
+                {
+                    for (int x = 0; x < width; x++)
                     {
-                        int sum = src[p[0] + c] + src[p[1] + c] + src[p[2] + c] + src[p[3] + c];
-                        dst[dstIndex + c] = (byte)((sum + 2) / 4);
+                        ColorBgra color = colorSurface[x, y];
+                        ColorBgra alpha = mipSurface[x, y];
+                        mipSurface[x, y] = ColorBgra.FromBgra(color.B, color.G, color.R, alpha.A);
                     }
                 }
             }
 
-            return dst;
+            return RgbaFromSurface(mipSurface);
+        }
+
+        private static ResamplingAlgorithm ToPaintDotNetResampling(MtfMipResamplingAlgorithm mipResampling)
+        {
+            return mipResampling switch
+            {
+                MtfMipResamplingAlgorithm.CubicSmooth => ResamplingAlgorithm.CubicSmooth,
+                MtfMipResamplingAlgorithm.Linear => ResamplingAlgorithm.Linear,
+                MtfMipResamplingAlgorithm.LinearLowQuality => ResamplingAlgorithm.LinearLowQuality,
+                MtfMipResamplingAlgorithm.AdaptiveHighQuality => ResamplingAlgorithm.AdaptiveHighQuality,
+                MtfMipResamplingAlgorithm.Lanczos3 => ResamplingAlgorithm.Lanczos3,
+                MtfMipResamplingAlgorithm.Fant => ResamplingAlgorithm.Fant,
+                MtfMipResamplingAlgorithm.NearestNeighbor => ResamplingAlgorithm.NearestNeighbor,
+                _ => ResamplingAlgorithm.Cubic,
+            };
         }
 
         private static byte[] EncodeMip(int width, int height, byte[] rgba32, BcFormat format)
         {
+            if (format == BcFormat.RGBA8)
+            {
+                byte[] raw = new byte[rgba32.Length];
+                Buffer.BlockCopy(rgba32, 0, raw, 0, rgba32.Length);
+                return raw;
+            }
+
             int blocksX = (width + 3) / 4;
             int blocksY = (height + 3) / 4;
-            int blockSize = format == BcFormat.BC1 ? 8 : 16;
+            int blockSize = (format == BcFormat.BC1 || format == BcFormat.BC4) ? 8 : 16;
             byte[] output = new byte[checked(blocksX * blocksY * blockSize)];
 
             byte[] block = new byte[16 * 4];
@@ -226,6 +391,10 @@ namespace MtfTexPaintDotNet
                             break;
                         case BcFormat.BC3:
                             EncodeBc3Block(block, output, dst);
+                            dst += 16;
+                            break;
+                        case BcFormat.BC5:
+                            EncodeBc5Block(block, output, dst);
                             dst += 16;
                             break;
                     }
@@ -269,6 +438,56 @@ namespace MtfTexPaintDotNet
         {
             EncodeAlphaBlock(blockRgba, output, outputOffset);
             EncodeBc1Block(blockRgba, output, outputOffset + 8);
+        }
+
+        private static void EncodeBc5Block(byte[] blockRgba, byte[] output, int outputOffset)
+        {
+            EncodeBc4ChannelBlock(blockRgba, 0, output, outputOffset + 0);
+            EncodeBc4ChannelBlock(blockRgba, 1, output, outputOffset + 8);
+        }
+
+        private static void EncodeBc4ChannelBlock(byte[] blockRgba, int channelOffset, byte[] output, int outputOffset)
+        {
+            byte minV = 255;
+            byte maxV = 0;
+            Span<byte> values = stackalloc byte[16];
+            for (int i = 0; i < 16; i++)
+            {
+                byte v = blockRgba[i * 4 + channelOffset];
+                values[i] = v;
+                if (v < minV) minV = v;
+                if (v > maxV) maxV = v;
+            }
+
+            byte a0 = maxV;
+            byte a1 = minV;
+            Span<byte> palette = stackalloc byte[8];
+            BuildAlphaPalette(a0, a1, palette);
+
+            ulong bits = 0;
+            for (int i = 0; i < 16; i++)
+            {
+                int best = 0;
+                int bestDist = int.MaxValue;
+                int v = values[i];
+                for (int p = 0; p < 8; p++)
+                {
+                    int dist = Math.Abs(v - palette[p]);
+                    if (dist < bestDist)
+                    {
+                        bestDist = dist;
+                        best = p;
+                    }
+                }
+                bits |= ((ulong)best & 0x7UL) << (i * 3);
+            }
+
+            output[outputOffset + 0] = a0;
+            output[outputOffset + 1] = a1;
+            for (int i = 0; i < 6; i++)
+            {
+                output[outputOffset + 2 + i] = (byte)((bits >> (i * 8)) & 0xFF);
+            }
         }
 
         private static void EncodeAlphaBlock(byte[] blockRgba, byte[] output, int outputOffset)
@@ -474,6 +693,28 @@ namespace MtfTexPaintDotNet
             r = ((value >> 11) & 31) * 255 / 31;
             g = ((value >> 5) & 63) * 255 / 63;
             b = (value & 31) * 255 / 31;
+        }
+
+
+
+        private static int PackRe6Dims(int width, int height)
+        {
+            if ((width & 3) != 0)
+            {
+                throw new NotSupportedException("RE6 TEX width must be divisible by 4.");
+            }
+
+            int widthUnits = width / 4;
+            if ((widthUnits & ~0x7FF) != 0)
+            {
+                throw new NotSupportedException($"RE6 TEX width {width} is out of range.");
+            }
+            if ((height & ~0x1FFF) != 0)
+            {
+                throw new NotSupportedException($"RE6 TEX height {height} is out of range.");
+            }
+
+            return widthUnits | (height << 11);
         }
 
         private readonly struct MipLevel

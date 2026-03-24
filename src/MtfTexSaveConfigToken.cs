@@ -3,12 +3,10 @@ using PaintDotNet;
 
 namespace MtfTexPaintDotNet
 {
-    public enum Re5SaveProfile
+    public enum MtfGameProfile
     {
-        Generic = 0,
-        BM = 1,
-        MM = 2,
-        NM = 3,
+        RE5 = 0,
+        RE6 = 1,
     }
 
     public enum Re5CompressionMode
@@ -17,6 +15,8 @@ namespace MtfTexPaintDotNet
         Dxt1 = 1,
         Dxt3 = 2,
         Dxt5 = 3,
+        Rgba8 = 4,
+        Bc5 = 5,
     }
 
     public enum Re5AlphaMode
@@ -25,19 +25,33 @@ namespace MtfTexPaintDotNet
         ForceOpaque = 1,
     }
 
+    public enum MtfMipResamplingAlgorithm
+    {
+        Cubic = 0,
+        CubicSmooth = 1,
+        Linear = 2,
+        LinearLowQuality = 3,
+        AdaptiveHighQuality = 4,
+        Lanczos3 = 5,
+        Fant = 6,
+        NearestNeighbor = 7,
+    }
+
     [Serializable]
     public sealed class MtfTexSaveConfigToken : SaveConfigToken
     {
-        public Re5SaveProfile Profile { get; set; }
+        public MtfGameProfile Profile { get; set; }
         public Re5CompressionMode Compression { get; set; }
         public bool GenerateMipmaps { get; set; }
+        public MtfMipResamplingAlgorithm MipResampling { get; set; }
         public Re5AlphaMode AlphaMode { get; set; }
 
         public MtfTexSaveConfigToken()
         {
-            Profile = Re5SaveProfile.Generic;
+            Profile = MtfGameProfile.RE5;
             Compression = Re5CompressionMode.Auto;
             GenerateMipmaps = true;
+            MipResampling = MtfMipResamplingAlgorithm.Cubic;
             AlphaMode = Re5AlphaMode.Preserve;
         }
 
@@ -49,6 +63,7 @@ namespace MtfTexPaintDotNet
             Profile = copyMe.Profile;
             Compression = copyMe.Compression;
             GenerateMipmaps = copyMe.GenerateMipmaps;
+            MipResampling = copyMe.MipResampling;
             AlphaMode = copyMe.AlphaMode;
         }
 
@@ -63,12 +78,17 @@ namespace MtfTexPaintDotNet
 
             if (!Enum.IsDefined(Profile))
             {
-                Profile = Re5SaveProfile.Generic;
+                Profile = MtfGameProfile.RE5;
             }
 
             if (!Enum.IsDefined(Compression))
             {
                 Compression = Re5CompressionMode.Auto;
+            }
+
+            if (!Enum.IsDefined(MipResampling))
+            {
+                MipResampling = MtfMipResamplingAlgorithm.Cubic;
             }
 
             if (!Enum.IsDefined(AlphaMode))
