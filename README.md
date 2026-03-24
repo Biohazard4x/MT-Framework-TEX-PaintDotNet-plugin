@@ -1,18 +1,21 @@
-RE5 PC TEX paint.net FileType plugin (DXT1 / DXT3 / DXT5)
+MT Framework TEX paint.net FileType plugin
 
-This build is intentionally scoped to Resident Evil 5 PC TEX files that use the RE5-style TEX\0 header layout...for now.
+Current scope of this source package:
+- RE5 PC: load + save
+  - DXT1
+  - DXT3
+  - DXT5
+- RE6 PC: load-only (2D textures)
+  - BC1-family: 0x011401 / 0x011901
+  - BC3-family: 0x011801 / 0x012501 / 0x012F01
+  - BC5: 0x011F01
+  - RGBA8-family: 0x012801 / 0x012701 / 0x010E01
 
-Supported load/save compression tags:
-- DXT1
-- DXT3
-- DXT5
+Current save path:
+- Save/export is still RE5 and RE6
 
-Save UI:
-- Profile presets: RE5 Generic / BM / MM / NM
-- Manual override for compression, mipmaps, and alpha handling
-- Profile selection fills in defaults but does not lock the controls
 
-Known limits:
-- Header flavor is still a safe generic RE5 PC header
-- No RE6 or other MT games support in this branch
-- No cubemap/special-data texture support in this branch
+Current known limits:
+- RE6 cubemaps are detected but not loaded yet
+- RE6 volume textures are detected but not loaded yet
+- Some rare RE6 special textures may still need per-format handling later
